@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "source": "https://github.com/zed-industries/zed.git",
+  "ref": "main",
+  "source_commit": "7eec89207ccfbef7ba366da22fc885079a5c0296",
+  "source_trees": {
+    "crates/gpui": "d7b6ee7aaf2e1ac8e4c025f7e5eff0fd23a809a3",
+    "crates/gpui_platform": "72f6014568b653ed96a486f782e2ed1fbd863740"
+  },
+  "sync_tag": "2026-08-22",
+  "synced_at": "2026-08-22T23:10:22+08:00",
+  "paths": [
+    "crates/gpui",
+    "crates/gpui_platform"
+  ]
+}
