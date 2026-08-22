@@ -16,9 +16,9 @@ DEFAULT_PATHS = (Path("crates/gpui"), Path("crates/gpui_platform"))
 DEFAULT_WORKSPACE_PACKAGES = ("gpui", "gpui_platform")
 DEFAULT_CONFIG_NAME = "zed-sync.toml"
 TOOL_CONFIG_PATH = Path(__file__).resolve().parents[1] / DEFAULT_CONFIG_NAME
-METADATA_PATH = Path(".zed-sync.json")
+MANIFEST_PATH = Path("manifest.json")
 WORKSPACE_MANIFEST_PATH = Path("Cargo.toml")
-WORKSPACE_SCHEMA = 1
+WORKSPACE_SCHEMA = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,7 +28,6 @@ class SyncConfig:
     ref: str
     paths: tuple[Path, ...]
     workspace_packages: tuple[str, ...]
-    metadata_path: Path = METADATA_PATH
     workspace_manifest_path: Path = WORKSPACE_MANIFEST_PATH
 
     @property
@@ -37,12 +36,13 @@ class SyncConfig:
 
     @property
     def managed_paths(self) -> tuple[Path, ...]:
-        return (*self.state_paths, self.metadata_path)
+        return (*self.state_paths, MANIFEST_PATH)
 
     @property
     def signature(self) -> str:
         payload = {
             "paths": [path.as_posix() for path in self.paths],
+            "metadata": MANIFEST_PATH.as_posix(),
             "workspace_manifest": self.workspace_manifest_path.as_posix(),
             "workspace_packages": list(self.workspace_packages),
             "workspace_schema": WORKSPACE_SCHEMA,

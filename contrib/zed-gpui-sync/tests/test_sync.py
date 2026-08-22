@@ -8,6 +8,13 @@ import sys
 import tempfile
 import tomllib
 import unittest
+from unittest.mock import patch
+from urllib.parse import unquote, urlparse
+
+from zed_gpui_sync.config import SyncConfig, load_config
+from zed_gpui_sync.errors import SyncError
+from zed_gpui_sync.sync import run_sync
+from zed_gpui_sync.verify import verify_consumer_build
 
 
 TOOL_ROOT = Path(__file__).resolve().parents[1]
@@ -207,10 +214,20 @@ workspace = true
             env=self.environment,
         )
 
+    def sync_config(self) -> SyncConfig:
+        return load_config(
+            root=self.destination,
+            config_path=self.config,
+            source_override=self.source,
+            ref_override=None,
+            path_overrides=None,
+            package_overrides=None,
+        )
+
     def history(self) -> tuple[str, list[str], str]:
         head = run(["git", "rev-parse", "HEAD"], self.destination).stdout.strip()
         tags = run(["git", "tag", "--list"], self.destination).stdout.splitlines()
-        metadata = (self.destination / ".zed-sync.json").read_text(encoding="utf-8")
+        metadata = (self.destination / "manifest.json").read_text(encoding="utf-8")
         return head, tags, metadata
 
     def test_only_tracked_tree_updates_create_commits_and_tags(self) -> None:
@@ -244,40 +261,6 @@ workspace = true
         self.assertNotIn("metadata", generated["workspace"])
         self.assertNotIn("profile", generated)
 
-        # Preserve compatibility with tags created by the original one-file
-        # tool, which did not embed per-path tree IDs in its annotation.
-        first_metadata = json.loads(
-            (self.destination / ".zed-sync.json").read_text(encoding="utf-8")
-        )
-        first_head = run(["git", "rev-parse", "HEAD"], self.destination).stdout.strip()
-        legacy_message = "\n".join(
-            (
-                f"Zed GPUI sync {INITIAL_TAG}",
-                "",
-                "Zed-Sync-Schema: 1",
-                f"Zed-Repository: {self.source}",
-                "Zed-Ref: main",
-                f"Zed-Commit: {first_metadata['source_commit']}",
-                "Zed-Paths: crates/gpui, crates/gpui_platform",
-            )
-        )
-        run(
-            [
-                "git",
-                "-c",
-                "user.name=Test",
-                "-c",
-                "user.email=test@example.com",
-                "tag",
-                "--force",
-                "-a",
-                INITIAL_TAG,
-                first_head,
-                "-m",
-                legacy_message,
-            ],
-            self.destination,
-        )
         first_history = self.history()
 
         # A daily run against the exact same ref is a complete no-op.
@@ -398,6 +381,114 @@ workspace = true
         metadata = json.loads(metadata_text)
         self.assertEqual(metadata["source_commit"], source_commit)
         self.assertEqual(metadata["source_date"], INITIAL_TAG)
+
+    def test_pre_commit_check_runs_before_commit_and_tag(self) -> None:
+        observations: list[str] = []
+
+        def check_before_commit(config: SyncConfig, output: object) -> None:
+            self.assertTrue((config.root / "Cargo.toml").is_file())
+            self.assertFalse((config.root / "manifest.json").exists())
+            head = subprocess.run(
+                ["git", "-C", config.root, "rev-parse", "--verify", "HEAD"],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertNotEqual(head.returncode, 0)
+            self.assertEqual(
+                run(["git", "tag", "--list"], config.root).stdout,
+                "",
+            )
+            observations.append("checked")
+
+        result = run_sync(
+            self.sync_config(),
+            before_commit=check_before_commit,
+            output=lambda _message: None,
+        )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(observations, ["checked"])
+        head, tags, _metadata = self.history()
+        self.assertTrue(head)
+        self.assertEqual(tags, [INITIAL_TAG])
+
+    def test_failed_pre_commit_check_creates_no_commit_or_tag(self) -> None:
+        self.sync()
+        before_history = self.history()
+        mirrored_source = self.destination / "crates/gpui/src/lib.rs"
+        before_source = mirrored_source.read_text(encoding="utf-8")
+
+        upstream_source = self.upstream / "crates/gpui/src/lib.rs"
+        upstream_source.write_text(
+            'pub const VALUE: &str = "unverified";\n',
+            encoding="utf-8",
+        )
+        self.commit_upstream("unverified update", LOCAL_TRACKED_UPDATE_TIME)
+
+        def reject_update(config: SyncConfig, output: object) -> None:
+            self.assertTrue((config.root / "Cargo.toml").is_file())
+            self.assertIn(
+                "unverified",
+                mirrored_source.read_text(encoding="utf-8"),
+            )
+            raise SyncError("consumer build failed")
+
+        with self.assertRaisesRegex(SyncError, "consumer build failed"):
+            run_sync(
+                self.sync_config(),
+                before_commit=reject_update,
+                output=lambda _message: None,
+            )
+
+        self.assertEqual(self.history(), before_history)
+        self.assertEqual(mirrored_source.read_text(encoding="utf-8"), before_source)
+
+    def test_consumer_verifier_uses_both_configured_dependencies(self) -> None:
+        self.sync()
+        observed: dict[str, object] = {}
+
+        def inspect_build(command: object, *, cwd: Path | None = None) -> None:
+            arguments = [str(argument) for argument in command]  # type: ignore[union-attr]
+            manifest_path = Path(arguments[arguments.index("--manifest-path") + 1])
+            manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+            observed["command"] = arguments
+            observed["cwd"] = cwd
+            observed["manifest"] = manifest
+            observed["source"] = (manifest_path.parent / "src/main.rs").read_text(
+                encoding="utf-8"
+            )
+            repository_url = manifest["dependencies"]["gpui"]["git"]
+            repository = Path(unquote(urlparse(repository_url).path))
+            observed["tracked_files"] = run(
+                ["git", "ls-files"], repository
+            ).stdout.splitlines()
+
+        with patch(
+            "zed_gpui_sync.verify.run_live_command",
+            side_effect=inspect_build,
+        ):
+            verify_consumer_build(self.sync_config(), output=lambda _message: None)
+
+        manifest = observed["manifest"]
+        self.assertIsInstance(manifest, dict)
+        dependencies = manifest["dependencies"]  # type: ignore[index]
+        self.assertEqual(set(dependencies), {"gpui", "gpui_platform"})
+        for package in ("gpui", "gpui_platform"):
+            self.assertEqual(dependencies[package]["version"], "*")
+            repository_url = dependencies[package]["git"]
+            self.assertTrue(repository_url.startswith("file://"))
+        self.assertEqual(
+            dependencies["gpui"]["git"],
+            dependencies["gpui_platform"]["git"],
+        )
+        tracked_files = observed["tracked_files"]
+        self.assertIn("Cargo.toml", tracked_files)
+        self.assertIn("crates/gpui/Cargo.toml", tracked_files)
+        self.assertIn("crates/gpui_platform/Cargo.toml", tracked_files)
+        self.assertEqual(observed["source"], "fn main() {}\n")
+        self.assertEqual(observed["command"][0:2], ["cargo", "build"])  # type: ignore[index]
 
     def test_local_changes_are_blocked_only_when_upstream_crates_changed(self) -> None:
         self.sync()

@@ -10,6 +10,11 @@ from .config import DEFAULT_CONFIG_NAME, DEFAULT_REF, DEFAULT_SOURCE, load_confi
 from .errors import SyncError
 from .repository import discover_repository_root
 from .sync import run_sync
+from .verify import verify_consumer_build
+
+
+def _output(message: str) -> None:
+    print(message, flush=True)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -30,6 +35,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         help="replace local modifications inside managed paths when an update exists",
+    )
+    parser.add_argument(
+        "--verify-build",
+        action="store_true",
+        help=(
+            "build a temporary Cargo consumer after preparing an update and before "
+            "creating its commit and tag"
+        ),
     )
     parser.add_argument(
         "--root",
@@ -79,7 +92,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             path_overrides=args.paths,
             package_overrides=args.packages,
         )
-        return run_sync(config, check_only=args.check, force=args.force)
+        before_commit = verify_consumer_build if args.verify_build else None
+        return run_sync(
+            config,
+            check_only=args.check,
+            force=args.force,
+            before_commit=before_commit,
+            output=_output,
+        )
     except SyncError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2

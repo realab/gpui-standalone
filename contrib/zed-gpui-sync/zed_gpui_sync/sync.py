@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import datetime as dt
 import json
 import os
 from pathlib import Path
 import shutil
 import tempfile
-from typing import Callable, Mapping
+from typing import Callable, Iterator, Mapping
 
-from .config import SyncConfig
+from .config import MANIFEST_PATH, SyncConfig
 from .errors import SyncError
 from .models import SourceSnapshot, SyncTag
 from .repository import (
@@ -25,6 +26,7 @@ from .repository import (
 
 
 Output = Callable[[str], None]
+PreCommitCheck = Callable[[SyncConfig, Output], None]
 
 
 def _same_upstream(previous: SyncTag | None, config: SyncConfig) -> bool:
@@ -35,11 +37,12 @@ def _same_upstream(previous: SyncTag | None, config: SyncConfig) -> bool:
     )
 
 
+@contextmanager
 def _replace_managed_paths(
     config: SyncConfig,
     checkout: Path,
     generated_files: Mapping[Path, str],
-) -> None:
+) -> Iterator[None]:
     root = config.root
     incoming_root = Path(tempfile.mkdtemp(prefix=".zed-sync-incoming-", dir=root))
     backup_root = Path(tempfile.mkdtemp(prefix=".zed-sync-backup-", dir=root))
@@ -65,6 +68,7 @@ def _replace_managed_paths(
                 destination.rename(backup)
             replacements.append((destination, backup))
             (incoming_root / relative_path).rename(destination)
+        yield
     except BaseException:
         for destination, backup in reversed(replacements):
             if destination.is_dir() and not destination.is_symlink():
@@ -105,7 +109,7 @@ def _write_metadata(config: SyncConfig, snapshot: SourceSnapshot, tag: str) -> N
         "workspace_packages": list(config.workspace_packages),
         "config_hash": config.signature,
     }
-    destination = config.root / config.metadata_path
+    destination = config.root / MANIFEST_PATH
     temporary = destination.with_name(f"{destination.name}.tmp")
     temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     os.replace(temporary, destination)
@@ -116,6 +120,7 @@ def run_sync(
     *,
     check_only: bool = False,
     force: bool = False,
+    before_commit: PreCommitCheck | None = None,
     output: Output = print,
 ) -> int:
     """Run synchronization and return 0, or 1 for a check with updates."""
@@ -177,7 +182,11 @@ def run_sync(
 
         tag_date = snapshot.tag_date
         replace_tag = ensure_date_tag_is_safe(config.root, tag_date)
-        _replace_managed_paths(config, checkout, snapshot.generated_files)
+        with _replace_managed_paths(config, checkout, snapshot.generated_files):
+            if before_commit is not None:
+                output("Running pre-commit verification ...")
+                before_commit(config, output)
+                output("Pre-commit verification passed.")
         _write_metadata(config, snapshot, tag_date)
 
     local_commit = commit_sync(config, snapshot.commit, tag_date)

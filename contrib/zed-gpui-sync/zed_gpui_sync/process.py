@@ -29,3 +29,24 @@ def run_command(
         detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
         raise SyncError(f"command failed ({shlex.join(rendered_command)}):\n{detail}")
     return result
+
+
+def run_live_command(
+    command: Sequence[str | Path],
+    *,
+    cwd: Path | None = None,
+) -> None:
+    """Run a command with output attached to the terminal."""
+
+    rendered_command = [str(part) for part in command]
+    result = subprocess.run(
+        rendered_command,
+        cwd=cwd,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise SyncError(
+            f"command failed with exit status {result.returncode} "
+            f"({shlex.join(rendered_command)})"
+        )

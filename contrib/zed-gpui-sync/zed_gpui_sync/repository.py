@@ -16,7 +16,6 @@ from .workspace import generate_workspace_manifest
 
 TAG_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 TAG_SCHEMA = "4"
-SUPPORTED_TAG_SCHEMAS = {"1", "2", "3", TAG_SCHEMA}
 INITIAL_HISTORY_DEPTH = 64
 MAX_DEEPEN_ATTEMPTS = 10
 FALLBACK_GIT_NAME = "Zed crate sync"
@@ -60,12 +59,7 @@ def ensure_destination_repository(root: Path) -> None:
     root.mkdir(parents=True, exist_ok=True)
     if destination_is_repository(root):
         return
-    initialized = run_command(
-        ("git", "init", "--initial-branch=main", root),
-        check=False,
-    )
-    if initialized.returncode != 0:
-        run_command(("git", "init", root))
+    run_command(("git", "init", "--initial-branch=main", root))
     print(f"Initialized Git repository in {root}")
 
 
@@ -255,26 +249,9 @@ def _tag_fields(root: Path, tag: str) -> dict[str, str] | None:
         f"refs/tags/{tag}",
     ).stdout
     fields = _parse_tag_message(message)
-    if fields.get("Zed-Sync-Schema") not in SUPPORTED_TAG_SCHEMAS:
+    if fields.get("Zed-Sync-Schema") != TAG_SCHEMA:
         return None
     return fields
-
-
-def _trees_at_tag(root: Path, tag: str, paths: Sequence[Path]) -> dict[Path, str]:
-    trees: dict[Path, str] = {}
-    for path in paths:
-        result = git(root, "rev-parse", f"{tag}:{path}", check=False)
-        if result.returncode != 0:
-            trees[path] = ""
-            continue
-        object_id = result.stdout.strip()
-        object_type = git(root, "cat-file", "-t", object_id).stdout.strip()
-        if object_type == "blob":
-            content = git(root, "cat-file", "blob", object_id).stdout.encode("utf-8")
-            trees[path] = "sha256:" + hashlib.sha256(content).hexdigest()
-        else:
-            trees[path] = object_id
-    return trees
 
 
 def latest_sync_tag(root: Path, paths: Sequence[Path]) -> SyncTag | None:
@@ -293,9 +270,8 @@ def latest_sync_tag(root: Path, paths: Sequence[Path]) -> SyncTag | None:
         }
         missing_paths = [path for path, tree_id in recorded_trees.items() if not tree_id]
         if missing_paths:
-            # Older tags did not include all fingerprints. Deriving only the
-            # missing values from the tagged snapshot keeps them compatible.
-            recorded_trees.update(_trees_at_tag(root, tag, missing_paths))
+            missing = ", ".join(str(path) for path in missing_paths)
+            raise SyncError(f"sync tag {tag} is missing tree metadata for: {missing}")
         return SyncTag(
             name=tag,
             source=source,
