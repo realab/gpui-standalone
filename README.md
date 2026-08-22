@@ -8,6 +8,15 @@ Zed. The first mirrored crates are:
 
 ## Use the synchronized crates
 
+For a standalone application, depend on the mirrored crates directly. This
+does not require cloning the Zed repository:
+
+```toml
+[dependencies]
+gpui = { git = "https://github.com/realab/gpui-standalone.git", tag = "2026-08-21" }
+gpui_platform = { git = "https://github.com/realab/gpui-standalone.git", tag = "2026-08-21" }
+```
+
 Patch Zed's GPUI dependencies to follow the latest synchronized `main` branch:
 
 ```toml
