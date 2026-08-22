@@ -1,0 +1,6 @@
+source = "https://github.com/zed-industries/zed.git"
+ref = "main"
+paths = [
+    "crates/gpui",
+    "crates/gpui_platform",
+]

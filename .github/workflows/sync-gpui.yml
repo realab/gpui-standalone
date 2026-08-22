@@ -1,0 +1,82 @@
+name: Sync GPUI crates
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-gpui-crates
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync from Zed
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out the default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.3"
+          enable-cache: true
+          cache-dependency-glob: tooling/zed-gpui-sync/uv.lock
+
+      - name: Configure Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Record the current revision
+        id: before
+        run: echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Sync GPUI crates
+        run: uv run --frozen --project tooling/zed-gpui-sync zed-gpui-sync
+
+      - name: Inspect the sync result
+        id: result
+        env:
+          BEFORE_HEAD: ${{ steps.before.outputs.head }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$(git rev-parse HEAD)" == "$BEFORE_HEAD" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No synchronized crate update was found."
+            exit 0
+          fi
+
+          tag="$(python3 -c 'import json; print(json.load(open(".zed-sync.json"))["sync_tag"])')"
+          if [[ ! "$tag" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            echo "The sync CLI produced an invalid date tag: $tag" >&2
+            exit 1
+          fi
+
+          if [[ "$(git rev-parse "refs/tags/$tag^{}")" != "$(git rev-parse HEAD)" ]]; then
+            echo "The generated tag $tag does not point to the sync commit." >&2
+            exit 1
+          fi
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Push the sync commit and tag
+        if: steps.result.outputs.changed == 'true'
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          SYNC_TAG: ${{ steps.result.outputs.tag }}
+        run: |
+          git push --atomic origin \
+            "HEAD:refs/heads/$DEFAULT_BRANCH" \
+            "+refs/tags/$SYNC_TAG:refs/tags/$SYNC_TAG"
