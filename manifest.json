@@ -33,7 +33,7 @@
     "crates/ztracing": "44d52fdeede2b5e9f10533a404dccf03393ac316",
     "crates/ztracing_macro": "c390cb4dfcf28e4232158b0ed74a581f3959dba0",
     "tooling/perf": "bf6bc301d330017a2247f6262f1c107ce07d8501",
-    "Cargo.toml": "sha256:8dbc3dcb1282354dd17cce7e854ae27dd5e95954a1eab2ffa26f1e162fd575dd"
+    "Cargo.toml": "sha256:778a5b6292f9f1088a2da47eaef02d1b218eb1854daad8bf51048f8a1819c4b6"
   },
   "source_path_commits": {
     "assets/fonts/ibm-plex-sans": "73bb119126da5bb4386d43f0ee839f7db4a15749",
@@ -96,7 +96,7 @@
     "tooling/perf": "2025-11-03T17:36:33+00:00"
   },
   "sync_tag": "2026-08-21",
-  "synced_at": "2026-08-23T00:47:23+08:00",
+  "synced_at": "2026-08-23T01:09:48+08:00",
   "paths": [
     "assets/fonts/ibm-plex-sans",
     "assets/fonts/lilex",
@@ -134,5 +134,5 @@
     "gpui",
     "gpui_platform"
   ],
-  "config_hash": "1550a87a17d7e618b140363fe664bbb66efdb8ea8d8b0d3f127b9ab099443c5d"
+  "config_hash": "972a1efd5a655a47ab828000f1e5b6c275d1e85b9c7ede90e68e7e426f2f540e"
 }
