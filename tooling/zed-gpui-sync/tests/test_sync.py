@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 
 
@@ -51,11 +52,24 @@ class SyncIntegrationTest(unittest.TestCase):
         self.upstream = base / "upstream"
         self.source = self.upstream.as_uri()
         self.destination = base / "destination"
+        self.config = base / "zed-sync.toml"
         self.upstream.mkdir()
         self.destination.mkdir()
+        self.config.write_text(
+            """\
+paths = [
+    "crates/gpui",
+    "crates/gpui_platform",
+    "crates/support",
+]
+workspace_packages = ["gpui", "gpui_platform"]
+""",
+            encoding="utf-8",
+        )
         run(["git", "init", "--initial-branch=main"], self.upstream)
         run(["git", "config", "user.name", "Test"], self.upstream)
         run(["git", "config", "user.email", "test@example.com"], self.upstream)
+        self.write_workspace()
         self.write_crates("one", include_removed_file=True)
         self.commit_upstream("initial", INITIAL_COMMIT_TIME)
 
@@ -70,12 +84,86 @@ class SyncIntegrationTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    def write_workspace(self) -> None:
+        (self.upstream / "Cargo.toml").write_text(
+            """\
+[workspace]
+resolver = "2"
+members = [
+    "crates/gpui",
+    "crates/gpui_platform",
+    "crates/support",
+    "crates/unrelated",
+]
+default-members = ["crates/unrelated"]
+
+[workspace.package]
+edition = "2024"
+publish = false
+license = "GPL-3.0-or-later"
+
+[workspace.dependencies]
+gpui = { path = "crates/gpui" }
+gpui_platform = { path = "crates/gpui_platform" }
+support = { path = "crates/support" }
+serde = "1"
+unrelated = { path = "crates/unrelated" }
+
+[workspace.lints.rust]
+unsafe_code = "allow"
+
+[workspace.metadata.unrelated]
+note = "initial"
+
+[profile.dev.package.unrelated]
+opt-level = 1
+""",
+            encoding="utf-8",
+        )
+
+        for crate in ("support", "unrelated"):
+            crate_root = self.upstream / "crates" / crate
+            (crate_root / "src").mkdir(parents=True, exist_ok=True)
+            (crate_root / "Cargo.toml").write_text(
+                f"""\
+[package]
+name = "{crate}"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+""",
+                encoding="utf-8",
+            )
+            (crate_root / "src" / "lib.rs").write_text(
+                f'pub const NAME: &str = "{crate}";\n',
+                encoding="utf-8",
+            )
+
     def write_crates(self, value: str, *, include_removed_file: bool) -> None:
         for crate in ("gpui", "gpui_platform"):
             crate_root = self.upstream / "crates" / crate
             (crate_root / "src").mkdir(parents=True, exist_ok=True)
+            dependencies = (
+                "[dependencies]\n"
+                "support.workspace = true\n"
+                "serde.workspace = true\n\n"
+                "[dev-dependencies]\n"
+                "gpui_platform.workspace = true\n"
+                if crate == "gpui"
+                else "[dependencies]\ngpui.workspace = true\n"
+            )
             (crate_root / "Cargo.toml").write_text(
-                f'[package]\nname = "{crate}"\nversion = "0.0.0"\n',
+                f"""\
+[package]
+name = "{crate}"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+{dependencies}""",
                 encoding="utf-8",
             )
             (crate_root / "src" / "lib.rs").write_text(
@@ -110,6 +198,8 @@ class SyncIntegrationTest(unittest.TestCase):
                 self.source,
                 "--root",
                 str(self.destination),
+                "--config",
+                str(self.config),
                 *extra,
             ],
             TOOL_ROOT,
@@ -131,6 +221,28 @@ class SyncIntegrationTest(unittest.TestCase):
         first = self.sync()
         self.assertIn(f"Tag: {INITIAL_TAG}", first.stdout)
         self.assertTrue((self.destination / "crates/gpui/remove_me.txt").exists())
+        generated = tomllib.loads(
+            (self.destination / "Cargo.toml").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            generated["workspace"]["members"],
+            ["crates/gpui", "crates/gpui_platform", "crates/support"],
+        )
+        self.assertEqual(
+            generated["workspace"]["default-members"],
+            ["crates/gpui", "crates/gpui_platform"],
+        )
+        self.assertEqual(
+            set(generated["workspace"]["dependencies"]),
+            {"gpui", "gpui_platform", "support", "serde"},
+        )
+        self.assertEqual(
+            generated["workspace"]["package"],
+            {"edition": "2024", "publish": False},
+        )
+        self.assertIn("lints", generated["workspace"])
+        self.assertNotIn("metadata", generated["workspace"])
+        self.assertNotIn("profile", generated)
 
         # Preserve compatibility with tags created by the original one-file
         # tool, which did not embed per-path tree IDs in its annotation.
@@ -173,8 +285,15 @@ class SyncIntegrationTest(unittest.TestCase):
         self.assertIn("No tracked crate updates", no_change.stdout)
         self.assertEqual(self.history(), first_history)
 
-        # A Zed commit outside configured crate trees is also a complete no-op.
-        (self.upstream / "README.md").write_text("unrelated\n", encoding="utf-8")
+        # A root Cargo change that is removed by the projection is also a no-op.
+        source_manifest = self.upstream / "Cargo.toml"
+        source_manifest.write_text(
+            source_manifest.read_text(encoding="utf-8").replace(
+                'note = "initial"',
+                'note = "changed"',
+            ),
+            encoding="utf-8",
+        )
         self.commit_upstream("unrelated update", UNRELATED_COMMIT_TIME)
         unrelated_check = self.sync("--check")
         self.assertIn("all configured crate trees are unchanged", unrelated_check.stdout)
@@ -209,7 +328,7 @@ class SyncIntegrationTest(unittest.TestCase):
         self.assertNotEqual(second_history[0], first_history[0])
         self.assertEqual(second_history[1], [INITIAL_TAG, UPDATE_TAG])
         metadata = json.loads(second_history[2])
-        self.assertEqual(metadata["schema"], 3)
+        self.assertEqual(metadata["schema"], 4)
         self.assertEqual(metadata["source_commit"], second_upstream_commit)
         self.assertEqual(metadata["source_date"], UPDATE_TAG)
         self.assertEqual(
@@ -244,6 +363,41 @@ class SyncIntegrationTest(unittest.TestCase):
         self.assertEqual(tagged_commit, third_history[0])
         third_metadata = json.loads(third_history[2])
         self.assertEqual(third_metadata["source_commit"], third_upstream_commit)
+
+    def test_relevant_root_dependency_change_updates_generated_manifest(self) -> None:
+        self.sync()
+        first_head, first_tags, _ = self.history()
+
+        source_manifest = self.upstream / "Cargo.toml"
+        source_manifest.write_text(
+            source_manifest.read_text(encoding="utf-8").replace(
+                'serde = "1"',
+                'serde = { version = "1", features = ["derive"] }',
+            ),
+            encoding="utf-8",
+        )
+        source_commit = self.commit_upstream(
+            "update a retained dependency",
+            UNRELATED_COMMIT_TIME,
+        )
+
+        self.sync("--check", expected=1)
+        updated = self.sync()
+        self.assertIn("Cargo.toml", updated.stdout)
+        second_head, second_tags, metadata_text = self.history()
+        self.assertNotEqual(second_head, first_head)
+        self.assertEqual(first_tags, [INITIAL_TAG])
+        self.assertEqual(second_tags, [INITIAL_TAG])
+        generated = tomllib.loads(
+            (self.destination / "Cargo.toml").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            generated["workspace"]["dependencies"]["serde"]["features"],
+            ["derive"],
+        )
+        metadata = json.loads(metadata_text)
+        self.assertEqual(metadata["source_commit"], source_commit)
+        self.assertEqual(metadata["source_date"], INITIAL_TAG)
 
     def test_local_changes_are_blocked_only_when_upstream_crates_changed(self) -> None:
         self.sync()

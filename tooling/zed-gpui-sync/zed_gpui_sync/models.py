@@ -21,6 +21,7 @@ class SourceSnapshot:
     commit: str
     trees: Mapping[Path, str]
     path_revisions: Mapping[Path, PathRevision]
+    generated_files: Mapping[Path, str]
 
     @property
     def latest_path_revision(self) -> PathRevision:
@@ -43,9 +44,15 @@ class SyncTag:
     ref: str
     source_commit: str
     trees: Mapping[Path, str]
+    config_hash: str | None = None
 
-    def tracks(self, source: str, ref: str) -> bool:
-        return self.source == source and self.ref == ref
+    def tracks(self, source: str, ref: str, config_hash: str) -> bool:
+        return (
+            self.source == source
+            and self.ref == ref
+            and self.config_hash == config_hash
+            and all(self.trees.values())
+        )
 
     def changed_paths(self, snapshot: SourceSnapshot) -> tuple[Path, ...]:
         return tuple(

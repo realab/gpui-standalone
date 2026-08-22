@@ -1,6 +1,33 @@
 source = "https://github.com/zed-industries/zed.git"
 ref = "main"
+workspace_packages = ["gpui", "gpui_platform"]
 paths = [
+    "assets/fonts/ibm-plex-sans",
+    "assets/fonts/lilex",
+    "crates/collections",
     "crates/gpui",
+    "crates/gpui_apple",
+    "crates/gpui_linux",
+    "crates/gpui_macos",
+    "crates/gpui_macros",
     "crates/gpui_platform",
+    "crates/gpui_shared_string",
+    "crates/gpui_util",
+    "crates/gpui_web",
+    "crates/gpui_wgpu",
+    "crates/gpui_windows",
+    "crates/http_client",
+    "crates/http_client_tls",
+    "crates/media",
+    "crates/path",
+    "crates/refineable",
+    "crates/reqwest_client",
+    "crates/scheduler",
+    "crates/sum_tree",
+    "crates/util",
+    "crates/util_macros",
+    "crates/zlog",
+    "crates/ztracing",
+    "crates/ztracing_macro",
+    "tooling/perf",
 ]

@@ -56,6 +56,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         help="override configured paths; repeat once for each repository-relative path",
     )
+    parser.add_argument(
+        "--package",
+        dest="packages",
+        action="append",
+        help=(
+            "override root workspace packages; repeat once for each package whose "
+            "dependency closure should be retained"
+        ),
+    )
     return parser
 
 
@@ -68,6 +77,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             source_override=args.source,
             ref_override=args.ref,
             path_overrides=args.paths,
+            package_overrides=args.packages,
         )
         return run_sync(config, check_only=args.check, force=args.force)
     except SyncError as error:

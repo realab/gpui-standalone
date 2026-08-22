@@ -44,6 +44,9 @@ jobs:
       - name: Sync GPUI crates
         run: uv run --frozen --project tooling/zed-gpui-sync zed-gpui-sync
 
+      - name: Validate the generated Cargo workspace
+        run: cargo metadata --manifest-path Cargo.toml --no-deps --format-version 1 > /dev/null
+
       - name: Inspect the sync result
         id: result
         env:

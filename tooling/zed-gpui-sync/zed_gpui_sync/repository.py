@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 from pathlib import Path
 import re
 import subprocess
@@ -10,11 +11,12 @@ from .config import SyncConfig
 from .errors import SyncError
 from .models import PathRevision, SourceSnapshot, SyncTag
 from .process import run_command
+from .workspace import generate_workspace_manifest
 
 
 TAG_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-TAG_SCHEMA = "3"
-SUPPORTED_TAG_SCHEMAS = {"1", "2", TAG_SCHEMA}
+TAG_SCHEMA = "4"
+SUPPORTED_TAG_SCHEMAS = {"1", "2", "3", TAG_SCHEMA}
 INITIAL_HISTORY_DEPTH = 64
 MAX_DEEPEN_ATTEMPTS = 10
 FALLBACK_GIT_NAME = "Zed crate sync"
@@ -214,11 +216,17 @@ def clone_snapshot(config: SyncConfig, destination: Path) -> SourceSnapshot:
         if not (destination / path).is_dir():
             raise SyncError(f"upstream path is missing or not a directory: {path}")
         trees[path] = git(destination, "rev-parse", f"HEAD:{path}").stdout.strip()
+    generated_workspace = generate_workspace_manifest(destination, config)
+    generated_content = generated_workspace.content
+    trees[config.workspace_manifest_path] = (
+        "sha256:" + hashlib.sha256(generated_content.encode("utf-8")).hexdigest()
+    )
     path_revisions = _latest_path_revisions(destination, clone_ref, config.paths)
     return SourceSnapshot(
         commit=commit,
         trees=trees,
         path_revisions=path_revisions,
+        generated_files={config.workspace_manifest_path: generated_content},
     )
 
 
@@ -257,8 +265,15 @@ def _trees_at_tag(root: Path, tag: str, paths: Sequence[Path]) -> dict[Path, str
     for path in paths:
         result = git(root, "rev-parse", f"{tag}:{path}", check=False)
         if result.returncode != 0:
-            raise SyncError(f"sync tag {tag} does not contain the managed path {path}")
-        trees[path] = result.stdout.strip()
+            trees[path] = ""
+            continue
+        object_id = result.stdout.strip()
+        object_type = git(root, "cat-file", "-t", object_id).stdout.strip()
+        if object_type == "blob":
+            content = git(root, "cat-file", "blob", object_id).stdout.encode("utf-8")
+            trees[path] = "sha256:" + hashlib.sha256(content).hexdigest()
+        else:
+            trees[path] = object_id
     return trees
 
 
@@ -273,17 +288,21 @@ def latest_sync_tag(root: Path, paths: Sequence[Path]) -> SyncTag | None:
         if not source or not ref or not commit:
             raise SyncError(f"sync tag {tag} is missing required Zed metadata")
 
-        trees = {path: fields.get(f"Zed-Tree-{path}", "") for path in paths}
-        if any(not tree_id for tree_id in trees.values()):
-            # Schema 1 tags did not include tree IDs. Deriving them from the
-            # tagged snapshot keeps existing repositories compatible.
-            trees = _trees_at_tag(root, tag, paths)
+        recorded_trees = {
+            path: fields.get(f"Zed-Tree-{path}", "") for path in paths
+        }
+        missing_paths = [path for path, tree_id in recorded_trees.items() if not tree_id]
+        if missing_paths:
+            # Older tags did not include all fingerprints. Deriving only the
+            # missing values from the tagged snapshot keeps them compatible.
+            recorded_trees.update(_trees_at_tag(root, tag, missing_paths))
         return SyncTag(
             name=tag,
             source=source,
             ref=ref,
             source_commit=commit,
-            trees=trees,
+            trees=recorded_trees,
+            config_hash=fields.get("Zed-Config-Hash"),
         )
     return None
 
@@ -367,16 +386,20 @@ def _tag_message(config: SyncConfig, snapshot: SourceSnapshot, tag: str) -> str:
         f"Zed-Ref: {config.ref}",
         f"Zed-Commit: {snapshot.commit}",
         f"Zed-Source-Date: {snapshot.tag_date}",
+        f"Zed-Config-Hash: {config.signature}",
         f"Zed-Paths: {', '.join(str(path) for path in config.paths)}",
+        f"Zed-Generated-Paths: {config.workspace_manifest_path}",
     ]
-    lines.extend(f"Zed-Tree-{path}: {snapshot.trees[path]}" for path in config.paths)
     lines.extend(
-        f"Zed-Path-Commit-{path}: {snapshot.path_revisions[path].commit}"
-        for path in config.paths
+        f"Zed-Tree-{path}: {tree_id}" for path, tree_id in snapshot.trees.items()
     )
     lines.extend(
-        f"Zed-Path-Date-{path}: {snapshot.path_revisions[path].committed_at.isoformat()}"
-        for path in config.paths
+        f"Zed-Path-Commit-{path}: {revision.commit}"
+        for path, revision in snapshot.path_revisions.items()
+    )
+    lines.extend(
+        f"Zed-Path-Date-{path}: {revision.committed_at.isoformat()}"
+        for path, revision in snapshot.path_revisions.items()
     )
     return "\n".join(lines)
 

@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
-from typing import Callable
+from typing import Callable, Mapping
 
 from .config import SyncConfig
 from .errors import SyncError
@@ -28,10 +28,18 @@ Output = Callable[[str], None]
 
 
 def _same_upstream(previous: SyncTag | None, config: SyncConfig) -> bool:
-    return previous is not None and previous.tracks(config.source, config.ref)
+    return previous is not None and previous.tracks(
+        config.source,
+        config.ref,
+        config.signature,
+    )
 
 
-def _replace_managed_paths(config: SyncConfig, checkout: Path) -> None:
+def _replace_managed_paths(
+    config: SyncConfig,
+    checkout: Path,
+    generated_files: Mapping[Path, str],
+) -> None:
     root = config.root
     incoming_root = Path(tempfile.mkdtemp(prefix=".zed-sync-incoming-", dir=root))
     backup_root = Path(tempfile.mkdtemp(prefix=".zed-sync-backup-", dir=root))
@@ -42,7 +50,12 @@ def _replace_managed_paths(config: SyncConfig, checkout: Path) -> None:
             incoming.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(checkout / relative_path, incoming, symlinks=True)
 
-        for relative_path in config.paths:
+        for relative_path, content in generated_files.items():
+            incoming = incoming_root / relative_path
+            incoming.parent.mkdir(parents=True, exist_ok=True)
+            incoming.write_text(content, encoding="utf-8")
+
+        for relative_path in config.state_paths:
             destination = root / relative_path
             destination.parent.mkdir(parents=True, exist_ok=True)
             backup: Path | None = None
@@ -58,7 +71,7 @@ def _replace_managed_paths(config: SyncConfig, checkout: Path) -> None:
                 shutil.rmtree(destination)
             elif destination.exists() or destination.is_symlink():
                 destination.unlink()
-            if backup is not None and backup.exists():
+            if backup is not None and (backup.exists() or backup.is_symlink()):
                 backup.parent.mkdir(parents=True, exist_ok=True)
                 backup.rename(destination)
         raise
@@ -69,22 +82,28 @@ def _replace_managed_paths(config: SyncConfig, checkout: Path) -> None:
 
 def _write_metadata(config: SyncConfig, snapshot: SourceSnapshot, tag: str) -> None:
     payload = {
-        "schema": 3,
+        "schema": 4,
         "source": config.source,
         "ref": config.ref,
         "source_commit": snapshot.commit,
         "source_date": snapshot.tag_date,
-        "source_trees": {str(path): snapshot.trees[path] for path in config.paths},
+        "source_trees": {
+            str(path): tree_id for path, tree_id in snapshot.trees.items()
+        },
         "source_path_commits": {
-            str(path): snapshot.path_revisions[path].commit for path in config.paths
+            str(path): revision.commit
+            for path, revision in snapshot.path_revisions.items()
         },
         "source_path_dates": {
-            str(path): snapshot.path_revisions[path].committed_at.isoformat()
-            for path in config.paths
+            str(path): revision.committed_at.isoformat()
+            for path, revision in snapshot.path_revisions.items()
         },
         "sync_tag": tag,
         "synced_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "paths": [str(path) for path in config.paths],
+        "generated_paths": [str(path) for path in snapshot.generated_files],
+        "workspace_packages": list(config.workspace_packages),
+        "config_hash": config.signature,
     }
     destination = config.root / config.metadata_path
     temporary = destination.with_name(f"{destination.name}.tmp")
@@ -102,7 +121,7 @@ def run_sync(
     """Run synchronization and return 0, or 1 for a check with updates."""
 
     is_repository = destination_is_repository(config.root)
-    previous = latest_sync_tag(config.root, config.paths) if is_repository else None
+    previous = latest_sync_tag(config.root, config.state_paths) if is_repository else None
     remote_commit = resolve_remote_commit(config.source, config.ref)
 
     if (
@@ -126,7 +145,11 @@ def run_sync(
                 f"{snapshot.commit} instead of {remote_commit}."
             )
 
-        if _same_upstream(previous, config) and previous is not None:
+        if (
+            previous is not None
+            and previous.source == config.source
+            and previous.ref == config.ref
+        ):
             changed_paths = previous.changed_paths(snapshot)
             if not changed_paths:
                 output(
@@ -135,7 +158,7 @@ def run_sync(
                 )
                 return 0
         else:
-            changed_paths = config.paths
+            changed_paths = config.state_paths
 
         output(f"Update available in: {', '.join(str(path) for path in changed_paths)}")
         if check_only:
@@ -154,7 +177,7 @@ def run_sync(
 
         tag_date = snapshot.tag_date
         replace_tag = ensure_date_tag_is_safe(config.root, tag_date)
-        _replace_managed_paths(config, checkout)
+        _replace_managed_paths(config, checkout, snapshot.generated_files)
         _write_metadata(config, snapshot, tag_date)
 
     local_commit = commit_sync(config, snapshot.commit, tag_date)
@@ -170,6 +193,7 @@ def run_sync(
         replace=replace_tag,
     )
     output(f"Synced {', '.join(str(path) for path in config.paths)}")
+    output(f"Generated {config.workspace_manifest_path} from Zed's workspace manifest")
     output(f"Zed commit: {snapshot.commit}")
     output(f"Local commit: {local_commit}")
     output(f"Latest synced-path commit date: {tag_date}")
