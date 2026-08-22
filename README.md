@@ -6,27 +6,25 @@ Zed. The first mirrored crates are:
 - `crates/gpui`
 - `crates/gpui_platform`
 
-## Add the crates to an application
+## Use the synchronized crates
 
-Use the latest versions from the Git repository's default branch:
+Patch Zed's GPUI dependencies to follow the latest synchronized `main` branch:
 
 ```toml
-[dependencies]
-gpui = { git = "https://github.com/realab/gpui-standalone.git", version = "*" }
-gpui_platform = { git = "https://github.com/realab/gpui-standalone.git", version = "*" }
+[patch."https://github.com/zed-industries/zed"]
+gpui = { git = "https://github.com/realab/gpui-standalone.git", branch = "main" }
+gpui_macros = { git = "https://github.com/realab/gpui-standalone.git", branch = "main" }
 ```
 
-Cargo records the resolved Git revision in `Cargo.lock`. Run
-`cargo update -p gpui -p gpui_platform` to refresh an existing project to the
-latest synchronized revision.
+Cargo pins the selected Git commit in `Cargo.lock`. Run
+`cargo update -p gpui -p gpui_macros` to update an existing project.
 
-To pin both crates to a specific synchronized snapshot, use the same dated tag
-for each dependency:
+For a reproducible build, patch both crates to the same dated tag:
 
 ```toml
-[dependencies]
+[patch."https://github.com/zed-industries/zed"]
 gpui = { git = "https://github.com/realab/gpui-standalone.git", tag = "2026-08-21" }
-gpui_platform = { git = "https://github.com/realab/gpui-standalone.git", tag = "2026-08-21" }
+gpui_macros = { git = "https://github.com/realab/gpui-standalone.git", tag = "2026-08-21" }
 ```
 
 Date tags use `YYYY-MM-DD` and represent the latest upstream commit date among
